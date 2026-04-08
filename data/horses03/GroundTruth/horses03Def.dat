@@ -1,0 +1,95 @@
+Ground truth definition file; do not change!
+
+Total number of regions:
+2
+Scale of region 0:
+16777215
+Scale of region 1:
+65535
+
+Confusion penality matrix:
+0 1
+1 0
+
+Total number of frames in this shot:
+240
+Total number of labeled frames for this shot:
+13
+Frame number:
+0
+File name:
+horses03_0001_gt.ppm
+Input file name:
+horses03_0001.ppm
+Frame number:
+19
+File name:
+horses03_0020_gt.ppm
+Input file name:
+horses03_0020.ppm
+Frame number:
+39
+File name:
+horses03_0040_gt.ppm
+Input file name:
+horses03_0040.ppm
+Frame number:
+59
+File name:
+horses03_0060_gt.ppm
+Input file name:
+horses03_0060.ppm
+Frame number:
+79
+File name:
+horses03_0080_gt.ppm
+Input file name:
+horses03_0080.ppm
+Frame number:
+99
+File name:
+horses03_0100_gt.ppm
+Input file name:
+horses03_0100.ppm
+Frame number:
+119
+File name:
+horses03_0120_gt.ppm
+Input file name:
+horses03_0120.ppm
+Frame number:
+139
+File name:
+horses03_0140_gt.ppm
+Input file name:
+horses03_0140.ppm
+Frame number:
+159
+File name:
+horses03_0160_gt.ppm
+Input file name:
+horses03_0160.ppm
+Frame number:
+179
+File name:
+horses03_0180_gt.ppm
+Input file name:
+horses03_0180.ppm
+Frame number:
+199
+File name:
+horses03_0200_gt.ppm
+Input file name:
+horses03_0200.ppm
+Frame number:
+219
+File name:
+horses03_0220_gt.ppm
+Input file name:
+horses03_0220.ppm
+Frame number:
+239
+File name:
+horses03_0240_gt.ppm
+Input file name:
+horses03_0240.ppm
