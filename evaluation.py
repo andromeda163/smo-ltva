@@ -575,6 +575,369 @@ def print_evaluation_result(result: TrackingEvaluationResult, verbose: bool = Tr
             print(f"  ... and {len(result.trajectories) - 20} more trajectories")
 
 
+def visualize_frame_evaluation(
+    frame: np.ndarray,
+    trajectories: List,
+    traj_to_region: Dict[int, int],
+    gt_mask: np.ndarray,
+    frame_idx: int,
+    frame_metrics: Optional[FrameMetrics] = None,
+    region_colors: Optional[Dict[int, Tuple[int, int, int]]] = None,
+    show_gt_overlay: bool = True,
+    gt_alpha: float = 0.3
+) -> np.ndarray:
+    """
+    Create a visualization of trajectories with evaluation status on a frame.
+    
+    Args:
+        frame: RGB frame as (H, W, 3) array
+        trajectories: List of trajectory objects
+        traj_to_region: Dict mapping trajectory index to assigned region
+        gt_mask: Ground truth mask for this frame
+        frame_idx: Current frame index
+        frame_metrics: Optional FrameMetrics to display
+        region_colors: Optional dict mapping region_id to RGB color
+        show_gt_overlay: Whether to overlay GT regions
+        gt_alpha: Transparency for GT overlay
+        
+    Returns:
+        Visualization image as (H, W, 3) RGB array
+    """
+    try:
+        import cv2
+    except ImportError:
+        raise ImportError("OpenCV is required for visualization")
+    
+    H, W = frame.shape[:2]
+    vis = frame.copy()
+    
+    # Default region colors
+    if region_colors is None:
+        region_colors = {
+            0: (200, 200, 200),   # Background: light gray
+            1: (0, 255, 255),     # Foreground: cyan
+            2: (255, 0, 255),     # Magenta
+            3: (255, 255, 0),     # Yellow
+            4: (0, 165, 255),     # Orange
+            5: (255, 0, 128),     # Rose
+        }
+    
+    # Overlay GT regions
+    if show_gt_overlay:
+        for region_id, color in region_colors.items():
+            mask = gt_mask == region_id
+            if np.any(mask):
+                for c in range(3):
+                    vis[:, :, c][mask] = (
+                        (1 - gt_alpha) * vis[:, :, c][mask] + gt_alpha * color[c]
+                    )
+    
+    # Draw trajectories
+    evaluator = TrajectoryEvaluator()
+    
+    for traj_idx, trajectory in enumerate(trajectories):
+        positions = evaluator._extract_trajectory_positions(trajectory)
+        
+        if frame_idx not in positions:
+            continue
+        
+        pos = positions[frame_idx]
+        x, y = int(pos[0]), int(pos[1])
+        
+        # Check bounds
+        if x < 0 or x >= W or y < 0 or y >= H:
+            continue
+        
+        assigned_region = traj_to_region.get(traj_idx, -1)
+        current_region = int(gt_mask[y, x])
+        
+        # Determine color based on consistency
+        if assigned_region < 0:
+            # Unassigned: gray
+            color = (128, 128, 128)
+            marker_type = 'hollow'
+        elif current_region == assigned_region:
+            # Consistent: green
+            color = (0, 255, 0)
+            marker_type = 'solid'
+        else:
+            # Inconsistent: red
+            color = (255, 0, 0)
+            marker_type = 'cross'
+        
+        # Draw marker
+        if marker_type == 'solid':
+            cv2.circle(vis, (x, y), 4, color, -1)
+            cv2.circle(vis, (x, y), 5, (255, 255, 255), 1)
+        elif marker_type == 'hollow':
+            cv2.circle(vis, (x, y), 4, color, 1)
+        elif marker_type == 'cross':
+            cv2.drawMarker(vis, (x, y), color, cv2.MARKER_CROSS, 8, 2)
+    
+    # Draw metrics text
+    if frame_metrics is not None:
+        y_offset = 30
+        texts = [
+            f"Frame: {frame_idx}",
+            f"Active: {frame_metrics.num_active_trajectories}",
+            f"Consistent: {frame_metrics.num_consistent}",
+            f"Inconsistent: {frame_metrics.num_inconsistent}",
+            f"Consistency: {frame_metrics.consistency_rate:.1%}"
+        ]
+        
+        for text in texts:
+            cv2.putText(vis, text, (10, y_offset), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            y_offset += 25
+    
+    return vis
+
+
+def create_evaluation_video(
+    video_path: str,
+    result: TrackingEvaluationResult,
+    trajectories: List,
+    ground_truth,
+    output_path: str,
+    fps: int = 10,
+    show_gt_overlay: bool = True,
+    verbose: bool = True
+) -> str:
+    """
+    Create a video showing frame-by-frame evaluation visualization.
+    
+    Args:
+        video_path: Path to video directory
+        result: TrackingEvaluationResult from evaluate_tracking()
+        trajectories: List of trajectory objects used in evaluation
+        ground_truth: GroundTruth object
+        output_path: Path for output video file
+        fps: Output video FPS
+        show_gt_overlay: Whether to overlay GT regions on annotated frames
+        verbose: Print progress information
+        
+    Returns:
+        Path to the created video file
+    """
+    try:
+        import cv2
+    except ImportError:
+        raise ImportError("OpenCV is required for video creation")
+    
+    from video_loader import VideoLoader
+    
+    # Load video
+    video = VideoLoader(video_path)
+    
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    H, W = video.frame_shape[:2]
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(str(output_path), fourcc, fps, (W, H))
+    
+    if verbose:
+        print(f"Creating evaluation video: {video_path}")
+        print(f"  Frames: {len(video)}")
+    
+    # Get trajectory-to-region mapping
+    evaluator = TrajectoryEvaluator()
+    first_annotated = min(ground_truth.frame_indices)
+    first_gt = ground_truth.load_ground_truth(first_annotated)
+    traj_to_region, _ = evaluator.assign_trajectories_to_regions(
+        trajectories, first_gt, frame_idx=first_annotated
+    )
+    
+    # Region colors
+    region_colors = {}
+    for region_id in range(ground_truth.num_regions):
+        region_colors[region_id] = ground_truth.regions[region_id].color
+    
+    # Process each frame
+    for frame_idx in range(len(video)):
+        frame = video[frame_idx]
+        
+        if ground_truth.has_ground_truth(frame_idx):
+            gt_mask = ground_truth.load_ground_truth(frame_idx)
+            frame_metrics = result.frame_metrics.get(frame_idx)
+            
+            vis = visualize_frame_evaluation(
+                frame, trajectories, traj_to_region, gt_mask, frame_idx,
+                frame_metrics=frame_metrics,
+                region_colors=region_colors,
+                show_gt_overlay=show_gt_overlay
+            )
+        else:
+            # No GT for this frame - just show trajectories
+            vis = frame.copy()
+            
+            for traj_idx, trajectory in enumerate(trajectories):
+                positions = evaluator._extract_trajectory_positions(trajectory)
+                
+                if frame_idx not in positions:
+                    continue
+                
+                pos = positions[frame_idx]
+                x, y = int(pos[0]), int(pos[1])
+                
+                if x < 0 or x >= W or y < 0 or y >= H:
+                    continue
+                
+                assigned_region = traj_to_region.get(traj_idx, -1)
+                
+                if assigned_region < 0:
+                    color = (128, 128, 128)
+                else:
+                    color = region_colors.get(assigned_region, (0, 255, 0))
+                
+                cv2.circle(vis, (x, y), 3, color, -1)
+            
+            # Show frame number
+            cv2.putText(vis, f"Frame: {frame_idx}", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # Convert RGB to BGR for OpenCV
+        vis_bgr = cv2.cvtColor(vis, cv2.COLOR_RGB2BGR)
+        out.write(vis_bgr)
+    
+    out.release()
+    
+    if verbose:
+        print(f"  Output saved to: {output_path}")
+    
+    return str(output_path)
+
+
+def create_evaluation_summary_image(
+    result: TrackingEvaluationResult,
+    output_path: str,
+    video_name: str = "Video"
+) -> str:
+    """
+    Create a summary image with evaluation metrics.
+    
+    Args:
+        result: TrackingEvaluationResult
+        output_path: Path for output image
+        video_name: Name of the video for display
+        
+    Returns:
+        Path to the created image
+    """
+    try:
+        import cv2
+    except ImportError:
+        raise ImportError("OpenCV is required for visualization")
+    
+    # Create image
+    W, H = 800, 600
+    img = np.ones((H, W, 3), dtype=np.uint8) * 30  # Dark background
+    
+    # Title
+    cv2.putText(img, f"Tracking Evaluation: {video_name}", (20, 40),
+               cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+    
+    # Overall metrics
+    y = 80
+    metrics_text = [
+        f"Total Trajectories: {result.num_trajectories}",
+        f"Assigned: {result.num_assigned}",
+        f"Unassigned: {result.num_unassigned}",
+        f"",
+        f"Mean Consistency: {result.mean_consistency:.1%}",
+        f"Survival Rate: {result.survival_rate:.1%}",
+        f"Coverage: {result.overall_coverage:.1%}",
+    ]
+    
+    for text in metrics_text:
+        cv2.putText(img, text, (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
+        y += 30
+    
+    # Per-region metrics
+    y += 20
+    cv2.putText(img, "Per-Region Metrics:", (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+    y += 35
+    
+    for region_id, region_eval in sorted(result.regions.items()):
+        text = f"Region {region_id}: {region_eval.num_trajectories} traj, " \
+               f"coverage={region_eval.coverage:.1%}, consistency={region_eval.mean_consistency:.1%}"
+        cv2.putText(img, text, (30, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
+        y += 25
+    
+    # Per-frame metrics (show as bar chart on right side)
+    if len(result.frame_metrics) > 0:
+        # Draw consistency rate over time
+        chart_x = 400
+        chart_y = 100
+        chart_w = 350
+        chart_h = 200
+        
+        # Background
+        cv2.rectangle(img, (chart_x, chart_y), (chart_x + chart_w, chart_y + chart_h), 
+                     (50, 50, 50), -1)
+        cv2.putText(img, "Consistency Over Time", (chart_x + 10, chart_y - 10),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        
+        # Plot bars
+        frames = sorted(result.frame_metrics.keys())
+        if len(frames) > 0:
+            bar_w = max(5, (chart_w - 20) // len(frames))
+            
+            for i, frame_idx in enumerate(frames):
+                metrics = result.frame_metrics[frame_idx]
+                bar_h = int(metrics.consistency_rate * (chart_h - 20))
+                x = chart_x + 10 + i * bar_w
+                
+                # Color based on consistency
+                if metrics.consistency_rate >= 0.9:
+                    color = (0, 200, 0)  # Green
+                elif metrics.consistency_rate >= 0.7:
+                    color = (0, 200, 200)  # Yellow
+                else:
+                    color = (0, 0, 200)  # Red
+                
+                cv2.rectangle(img, (x, chart_y + chart_h - bar_h - 10),
+                             (x + bar_w - 2, chart_y + chart_h - 10), color, -1)
+        
+        # Y-axis labels
+        cv2.putText(img, "100%", (chart_x - 45, chart_y + 15),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
+        cv2.putText(img, "50%", (chart_x - 40, chart_y + chart_h // 2),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
+        cv2.putText(img, "0%", (chart_x - 35, chart_y + chart_h - 5),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
+    
+    # Legend
+    y = chart_y + chart_h + 50
+    cv2.putText(img, "Legend:", (chart_x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+    y += 25
+    
+    # Consistent marker
+    cv2.circle(img, (chart_x + 10, y), 4, (0, 255, 0), -1)
+    cv2.putText(img, "Consistent", (chart_x + 25, y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
+    
+    # Inconsistent marker
+    y += 25
+    cv2.drawMarker(img, (chart_x + 10, y), (255, 0, 0), cv2.MARKER_CROSS, 8, 2)
+    cv2.putText(img, "Inconsistent", (chart_x + 25, y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
+    
+    # Unassigned marker
+    y += 25
+    cv2.circle(img, (chart_x + 10, y), 4, (128, 128, 128), 1)
+    cv2.putText(img, "Unassigned", (chart_x + 25, y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
+    
+    # Save image
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(output_path), img)
+    
+    return str(output_path)
+
+
+# Need to import Path for the functions above
+from pathlib import Path
+
+
 if __name__ == '__main__':
     import argparse
     
@@ -603,6 +966,29 @@ if __name__ == '__main__':
         '--verbose',
         action='store_true',
         help='Print per-trajectory details'
+    )
+    parser.add_argument(
+        '--output-video', '-o',
+        type=str,
+        default=None,
+        help='Path for evaluation visualization video'
+    )
+    parser.add_argument(
+        '--output-summary', '-s',
+        type=str,
+        default=None,
+        help='Path for evaluation summary image'
+    )
+    parser.add_argument(
+        '--fps',
+        type=int,
+        default=10,
+        help='FPS for output video (default: 10)'
+    )
+    parser.add_argument(
+        '--no-gt-overlay',
+        action='store_true',
+        help='Do not overlay GT regions on visualization'
     )
     
     args = parser.parse_args()
@@ -643,3 +1029,47 @@ if __name__ == '__main__':
     
     # Print results
     print_evaluation_result(result, verbose=args.verbose)
+    
+    # Create visual outputs if requested
+    video_name = Path(args.video).name
+    
+    if args.output_video:
+        create_evaluation_video(
+            args.video,
+            result,
+            list(tracker.points.values()),
+            gt,
+            args.output_video,
+            fps=args.fps,
+            show_gt_overlay=not args.no_gt_overlay
+        )
+    elif args.output_summary or (not args.output_video and not args.output_summary):
+        # Default: create both outputs
+        output_dir = Path('outputs/evaluation')
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        video_output = output_dir / f'{video_name}_eval_video.mp4'
+        summary_output = output_dir / f'{video_name}_eval_summary.png'
+        
+        create_evaluation_video(
+            args.video,
+            result,
+            list(tracker.points.values()),
+            gt,
+            str(video_output),
+            fps=args.fps,
+            show_gt_overlay=not args.no_gt_overlay
+        )
+        
+        create_evaluation_summary_image(
+            result,
+            str(summary_output),
+            video_name=video_name
+        )
+    
+    if args.output_summary:
+        create_evaluation_summary_image(
+            result,
+            args.output_summary,
+            video_name=video_name
+        )
